@@ -13,10 +13,11 @@ node index.js
 ```
 #### Nodemon
 ```
-yarn nodemon -V --ignore uploads/*
+mkdir uploads
+yarn nodemon -V --ignore uploads
 ```
 
 ## Running Redis instance in docker
 ```
-docker run --name redis -d redis redis-server --save 60 1 --loglevel warning
+docker run -p 6379:6379 --name redis -d redis redis-server --save 60 1 --loglevel warning
 ```
