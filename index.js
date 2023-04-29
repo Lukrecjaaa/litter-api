@@ -40,7 +40,17 @@ let job = new cron(
           await redisClient.del(file);
         }
       } catch {
-        fs.rmSync(path.join(base_path, file));
+        try {
+          const stats = fs.statSync(path.join(base_path, file));
+
+          const one_hour = 60 * 60 * 1000;
+          const current_date = new Date().getTime();
+          const file_time = stats.mtime.getTime();
+
+          if (current_date - file_time > one_hour) {
+            fs.rmSync(path.join(base_path, file));
+          }
+        } catch {}
       }
     });
   },
