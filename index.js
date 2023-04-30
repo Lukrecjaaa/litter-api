@@ -87,7 +87,11 @@ async function downloadFile(req, res) {
     const result = await redisClient.get(filename_encoded);
     if (result) {
       const object = JSON.parse(result);
-      res.download(object.path, object.originalname);
+      res.set({
+        'Content-Disposition': `inline; filename="${object.file.originalname}"`,
+        'Content-Type': `${object.file.mimetype}`,
+      });
+      res.send(fs.readFileSync(object.file.path));
     } else {
       res.status(404);
       res.send('Requested file cannot be found');
@@ -109,10 +113,8 @@ async function uploadFile(req, res) {
     
     await redisClient.set(filename_encoded, JSON.stringify(
       {
-        originalname: out.originalname,
-        path: out.path,
+        file: out,
         expiry_date: expiry_date,
-        filename: out.filename,
         token: req.query.token
       }
     ));
@@ -130,11 +132,11 @@ async function removeFile(req, res) {
   try {
     const file_data = req.file_data;
     const filename_encoded = req.filename_encoded;
-    let path = file_data.path;
+    let path = file_data.file.path;
 
     fs.rmSync(path);
     await redisClient.del(filename_encoded);
-    await redisClient.del(file_data.filename);
+    await redisClient.del(file_data.file.filename);
 
     res.sendStatus(200);
   } catch (err) {
