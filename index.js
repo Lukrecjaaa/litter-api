@@ -82,11 +82,11 @@ async function downloadFile(req, res) {
       res.download(object.path, object.originalname);
     } else {
       res.status(404);
-      res.json({ error: 'Requested file cannot be found' });
+      res.json({ message: 'Requested file cannot be found' });
     }
   } catch (err) {
     res.status(500);
-    res.json({ error: err });
+    res.json({ message: err });
   }
 }
 
@@ -113,7 +113,7 @@ async function uploadFile(req, res) {
     res.json({ path: filename_encoded });
   } catch (err) {
     res.status(500);
-    res.json({ error: err });
+    res.json({ message: err });
   }
 }
 
@@ -132,13 +132,71 @@ async function removeFile(req, res) {
     res.json({ message: 'OK' });
   } catch (err) {
     res.status(500);
-    res.json({ error: err });
+    res.json({ message: err });
   }
 }
 
-app.post('/', upload.single('file'), uploadFile);
+async function newToken(ip) {
+  const token = crypto.randomUUID();
+  const current_date = new Date();
+  // 5 minutes from now
+  const expiry_date = new Date(current_date.getTime() + 5 * 60 * 1000).getTime();
+  await redisClient.set(`token:${ip}`, JSON.stringify({
+    token: token,
+    expiry_date: expiry_date
+  }));
+  return token;
+}
+
+async function generateToken(req, res) {
+  try {
+    const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    try {
+      const prev_token = await redisClient.get(`token:${clientIp}`);
+      const parsed = JSON.parse(prev_token);
+      const current_date = new Date().getTime();
+      const expired = parsed.expiry_date < current_date;
+
+      if (expired) {
+        res.json({ token: await newToken(clientIp) });
+      } else {
+        res.json({ token: parsed.token });
+      }
+    } catch {
+      res.json({ token: await newToken(clientIp) });
+    }
+  } catch (err) {
+    res.status(500);
+    res.json({ message: err });
+  }
+}
+
+async function checkToken(req, res, next) {
+  const token = req.query.token;
+
+  if (!token) {
+    res.status(403);
+    return res.json({ message: 'Session token required' });
+  }
+
+  const currentIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+  const token_data = await redisClient.get(`token:${currentIp}`);
+  const parsed = JSON.parse(token_data);
+  const current_date = new Date().getTime();
+  const expired = parsed.expiry_date < current_date;
+
+  if (expired) {
+    res.status(403);
+    return res.json({ message: 'Session token expired' });
+  } else {
+    next();
+  }
+}
+
+app.post('/', checkToken, upload.single('file'), uploadFile);
+app.get("/remove/:name", checkToken, removeFile);
+app.get("/token", generateToken);
 app.get("/:name", downloadFile);
-app.get("/remove/:name", removeFile);
 
 app.listen(port, () => {
   console.log(`App listening on port ${port}`);
