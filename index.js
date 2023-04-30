@@ -7,6 +7,7 @@ const base58check = require('base58check');
 const cron = require('cron').CronJob;
 const fs = require('fs');
 const path = require('path');
+const rateLimit = require('express-rate-limit');
 
 require('dotenv').config();
 
@@ -19,6 +20,13 @@ app.use(cors({
   origin: process.env.CORS_ALLOWED_ORIGIN,
   optionsSuccessStatus: 200
 }));
+
+const uploadLimiter = rateLimit({
+  windowMs: process.env.RATE_LIMIT_WINDOW || 60 * 60 * 1000,
+  max: process.env.MAX_FILE_AMOUNT || 100,
+  standardHeaders: true,
+  legacyHeaders: false
+});
 
 let redisClient;
 
@@ -82,11 +90,11 @@ async function downloadFile(req, res) {
       res.download(object.path, object.originalname);
     } else {
       res.status(404);
-      res.json({ message: 'Requested file cannot be found' });
+      res.send('Requested file cannot be found');
     }
   } catch (err) {
     res.status(500);
-    res.json({ message: err });
+    res.send(err);
   }
 }
 
@@ -114,7 +122,7 @@ async function uploadFile(req, res) {
     res.json({ path: filename_encoded });
   } catch (err) {
     res.status(500);
-    res.json({ message: err });
+    res.send(err);
   }
 }
 
@@ -128,10 +136,10 @@ async function removeFile(req, res) {
     await redisClient.del(filename_encoded);
     await redisClient.del(file_data.filename);
 
-    res.json({ message: 'OK' });
+    res.sendStatus(200);
   } catch (err) {
     res.status(500);
-    res.json({ message: err });
+    res.send(err);
   }
 }
 
@@ -166,7 +174,7 @@ async function generateToken(req, res) {
     }
   } catch (err) {
     res.status(500);
-    res.json({ message: err });
+    res.send(err);
   }
 }
 
@@ -175,7 +183,7 @@ async function checkToken(req, res, next) {
 
   if (!token) {
     res.status(403);
-    return res.json({ message: 'Session token required' });
+    return res.send('Session token required');
   }
 
   const currentIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -186,7 +194,7 @@ async function checkToken(req, res, next) {
 
   if (expired) {
     res.status(403);
-    return res.json({ message: 'Session token expired' });
+    return res.send('Session token expired');
   } else {
     next();
   }
@@ -209,15 +217,17 @@ async function isUploadOwner(req, res, next) {
       next();
     } else {
       res.status(403);
-      return res.json({ message: 'Not an owner of the file' });
+      return res.send('Not an owner of the file');
     }
   } catch (err) {
     res.status(403);
-    return res.json({ message: 'Cannot check file ownership' });
+    return res.send('Cannot check file ownership');
   }
 }
 
-app.post('/', checkToken, upload.single('file'), uploadFile);
+app.use('/upload', uploadLimiter);
+
+app.post('/upload', checkToken, upload.single('file'), uploadFile);
 app.get("/remove/:name", checkToken, isUploadOwner, removeFile);
 app.get("/token", generateToken);
 app.get("/:name", downloadFile);
