@@ -225,6 +225,7 @@ async function isUploadOwner(req, res, next) {
   }
 }
 
+app.set('trust proxy', 1);
 app.use('/upload', uploadLimiter);
 
 app.post('/upload', checkToken, upload.single('file'), uploadFile);
