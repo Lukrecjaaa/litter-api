@@ -104,7 +104,8 @@ async function uploadFile(req, res) {
         originalname: out.originalname,
         path: out.path,
         expiry_date: expiry_date,
-        filename: out.filename
+        filename: out.filename,
+        token: req.query.token
       }
     ));
 
@@ -119,10 +120,8 @@ async function uploadFile(req, res) {
 
 async function removeFile(req, res) {
   try {
-    const filename_encoded = req.params.name;
-
-    let file_data = await redisClient.get(filename_encoded);
-    file_data = JSON.parse(file_data);
+    const file_data = req.file_data;
+    const filename_encoded = req.filename_encoded;
     let path = file_data.path;
 
     fs.rmSync(path);
@@ -193,8 +192,33 @@ async function checkToken(req, res, next) {
   }
 }
 
+async function isUploadOwner(req, res, next) {
+  try {
+    const currentIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
+    const token_data = await redisClient.get(`token:${currentIp}`);
+    const parsed_token = JSON.parse(token_data);
+
+    const filename_encoded = req.params.name;
+    
+    let file_data = await redisClient.get(filename_encoded);
+    file_data = JSON.parse(file_data);
+
+    if (parsed_token.token == file_data.token) {
+      req.file_data = file_data;
+      req.filename_encoded = filename_encoded;
+      next();
+    } else {
+      res.status(403);
+      return res.json({ message: 'Not an owner of the file' });
+    }
+  } catch (err) {
+    res.status(403);
+    return res.json({ message: 'Cannot check file ownership' });
+  }
+}
+
 app.post('/', checkToken, upload.single('file'), uploadFile);
-app.get("/remove/:name", checkToken, removeFile);
+app.get("/remove/:name", checkToken, isUploadOwner, removeFile);
 app.get("/token", generateToken);
 app.get("/:name", downloadFile);
 
