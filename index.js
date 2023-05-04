@@ -18,7 +18,8 @@ let upload = multer({ dest: base_path });
 
 app.use(cors({
   origin: process.env.CORS_ALLOWED_ORIGIN,
-  optionsSuccessStatus: 200
+  optionsSuccessStatus: 200,
+  exposedHeaders: 'Content-Disposition'
 }));
 
 const uploadLimiter = rateLimit({
@@ -89,7 +90,7 @@ async function downloadFile(req, res) {
       const object = JSON.parse(result);
       res.set({
         'Content-Disposition': `inline; filename="${object.file.originalname}"`,
-        'Content-Type': `${object.file.mimetype}`,
+        'Content-Type': `${object.file.mimetype}`
       });
       res.send(fs.readFileSync(object.file.path));
     } else {
@@ -148,8 +149,8 @@ async function removeFile(req, res) {
 async function newToken(ip) {
   const token = crypto.randomUUID();
   const current_date = new Date();
-  // 5 minutes from now
-  const expiry_date = new Date(current_date.getTime() + 5 * 60 * 1000).getTime();
+  // 1 hour from now
+  const expiry_date = new Date(current_date.getTime() + 60 * 60 * 1000).getTime();
   await redisClient.set(`token:${ip}`, JSON.stringify({
     token: token,
     expiry_date: expiry_date
