@@ -1,78 +1,81 @@
+/* eslint-disable consistent-return */
+/* eslint-disable no-console */
 
 const express = require('express');
 const multer = require('multer');
 const cors = require('cors');
 const redis = require('redis');
 const base58check = require('base58check');
-const cron = require('cron').CronJob;
+const Cron = require('cron').CronJob;
 const fs = require('fs');
 const path = require('path');
 const rateLimit = require('express-rate-limit');
+const { randomUUID } = require('node:crypto');
 
 require('dotenv').config();
 
 const app = express();
 const port = process.env.PORT || 3000;
-const base_path = process.env.BASE_PATH || './uploads';
-let upload = multer({ dest: base_path });
+const basePath = process.env.BASE_PATH || './uploads';
+const upload = multer({ dest: basePath });
 
 app.use(cors({
   origin: process.env.CORS_ALLOWED_ORIGIN,
   optionsSuccessStatus: 200,
-  exposedHeaders: 'Content-Disposition'
+  exposedHeaders: 'Content-Disposition',
 }));
 
 const uploadLimiter = rateLimit({
   windowMs: process.env.RATE_LIMIT_WINDOW || 60 * 60 * 1000,
   max: process.env.MAX_FILE_AMOUNT || 100,
   standardHeaders: true,
-  legacyHeaders: false
+  legacyHeaders: false,
 });
 
 let redisClient;
 
-let job = new cron(
+const job = new Cron(
   '* * * * *',
-  function() {
-    fs.readdirSync(base_path).forEach(async (file) => {
+  (() => {
+    fs.readdirSync(basePath).forEach(async (file) => {
       try {
-        let current_date = new Date().getTime();
-  
-        let filename_encoded = await redisClient.get(file);
-        let file_data = await redisClient.get(filename_encoded);
-        file_data = JSON.parse(file_data);
-        let expired = file_data.expiry_date < current_date;
+        const currentDate = new Date().getTime();
+
+        const filenameEncoded = await redisClient.get(file);
+        let fileData = await redisClient.get(filenameEncoded);
+        fileData = JSON.parse(fileData);
+        const expired = fileData.expiryDate < currentDate;
 
         if (expired) {
-          fs.rmSync(path.join(base_path, file));
-          await redisClient.del(filename_encoded);
+          fs.rmSync(path.join(basePath, file));
+          await redisClient.del(filenameEncoded);
           await redisClient.del(file);
         }
       } catch {
         try {
-          const stats = fs.statSync(path.join(base_path, file));
+          const stats = fs.statSync(path.join(basePath, file));
 
-          const one_hour = 60 * 60 * 1000;
-          const current_date = new Date().getTime();
-          const file_time = stats.mtime.getTime();
+          const oneHour = 60 * 60 * 1000;
+          const currentDate = new Date().getTime();
+          const fileTime = stats.mtime.getTime();
 
-          if (current_date - file_time > one_hour) {
-            fs.rmSync(path.join(base_path, file));
+          if (currentDate - fileTime > oneHour) {
+            fs.rmSync(path.join(basePath, file));
           }
-        } catch {}
+        } catch { /* empty */ }
       }
     });
-  },
+  }),
   null,
-  false
+  false,
 );
 
 (async () => {
   redisClient = redis.createClient({
-    url: process.env.REDIS_URL
+    url: process.env.REDIS_URL,
   });
 
-  redisClient.on("error", (error) => {
+  redisClient.on('error', (error) => {
     console.error(error);
   });
 
@@ -82,25 +85,23 @@ let job = new cron(
 })();
 
 async function downloadFile(req, res) {
-  const filename_encoded = req.params.name;
+  const filenameEncoded = req.params.name;
 
   try {
-    const result = await redisClient.get(filename_encoded);
+    const result = await redisClient.get(filenameEncoded);
     if (result) {
       const object = JSON.parse(result);
-      const path = object.file.path;
+      const filePath = object.file.path;
 
       res.set({
         'Content-Disposition': `inline; filename="${object.file.originalname}"`,
-        'Content-Type': `${object.file.mimetype}`
+        'Content-Type': `${object.file.mimetype}`,
       });
-      res.send(fs.readFileSync(path));
+      res.send(fs.readFileSync(filePath));
 
       if (object.burn) {
-        const filename_encoded = req.params.name;
-
-        fs.rmSync(path);
-        await redisClient.del(filename_encoded);
+        fs.rmSync(filePath);
+        await redisClient.del(filenameEncoded);
         await redisClient.del(object.file.filename);
       }
     } else {
@@ -115,26 +116,29 @@ async function downloadFile(req, res) {
 
 async function uploadFile(req, res) {
   try {
-    let out = req.file;
+    const out = req.file;
 
-    const current_date = new Date();
-    const expiry_date = new Date(current_date.getTime() + Number(req.body.expire_after) * 60 * 60 * 1000).getTime();
+    const currentDate = new Date();
+    const expiryDate = new Date(
+      currentDate.getTime() + Number(req.body.expireAfter) * 60 * 60 * 1000,
+    ).getTime();
     const burn = (req.body.burn === 'true');
-    
-    const filename_encoded = base58check.encode(out.filename).substring(1, 7); // skip first character
-    
-    await redisClient.set(filename_encoded, JSON.stringify(
+
+    /* skip first base58check character */
+    const filenameEncoded = base58check.encode(out.filename).substring(1, 7);
+
+    await redisClient.set(filenameEncoded, JSON.stringify(
       {
         file: out,
-        expiry_date: expiry_date,
+        expiryDate,
         token: req.query.token,
-        burn: burn
-      }
+        burn,
+      },
     ));
 
-    await redisClient.set(out.filename, filename_encoded);
-    
-    res.json({ path: filename_encoded });
+    await redisClient.set(out.filename, filenameEncoded);
+
+    res.json({ path: filenameEncoded });
   } catch (err) {
     res.status(500);
     res.send(err);
@@ -143,13 +147,13 @@ async function uploadFile(req, res) {
 
 async function removeFile(req, res) {
   try {
-    const file_data = req.file_data;
-    const filename_encoded = req.filename_encoded;
-    let path = file_data.file.path;
+    const { fileData } = req;
+    const { filenameEncoded } = req;
+    const filePath = fileData.file.path;
 
-    fs.rmSync(path);
-    await redisClient.del(filename_encoded);
-    await redisClient.del(file_data.file.filename);
+    fs.rmSync(filePath);
+    await redisClient.del(filenameEncoded);
+    await redisClient.del(fileData.file.filename);
 
     res.sendStatus(200);
   } catch (err) {
@@ -159,13 +163,13 @@ async function removeFile(req, res) {
 }
 
 async function newToken(ip) {
-  const token = crypto.randomUUID();
-  const current_date = new Date();
-  // 1 hour from now
-  const expiry_date = new Date(current_date.getTime() + 60 * 60 * 1000).getTime();
+  const token = randomUUID();
+  const currentDate = new Date();
+  /* 1 hour from now */
+  const expiryDate = new Date(currentDate.getTime() + 60 * 60 * 1000).getTime();
   await redisClient.set(`token:${ip}`, JSON.stringify({
-    token: token,
-    expiry_date: expiry_date
+    token,
+    expiryDate,
   }));
   return token;
 }
@@ -174,10 +178,10 @@ async function generateToken(req, res) {
   try {
     const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
     try {
-      const prev_token = await redisClient.get(`token:${clientIp}`);
-      const parsed = JSON.parse(prev_token);
-      const current_date = new Date().getTime();
-      const expired = parsed.expiry_date < current_date;
+      const prevToken = await redisClient.get(`token:${clientIp}`);
+      const parsed = JSON.parse(prevToken);
+      const currentDate = new Date().getTime();
+      const expired = parsed.expiryDate < currentDate;
 
       if (expired) {
         res.json({ token: await newToken(clientIp) });
@@ -194,7 +198,7 @@ async function generateToken(req, res) {
 }
 
 async function checkToken(req, res, next) {
-  const token = req.query.token;
+  const { token } = req.query;
 
   if (!token) {
     res.status(403);
@@ -202,33 +206,33 @@ async function checkToken(req, res, next) {
   }
 
   const currentIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-  const token_data = await redisClient.get(`token:${currentIp}`);
-  const parsed = JSON.parse(token_data);
-  const current_date = new Date().getTime();
-  const expired = parsed.expiry_date < current_date;
+  const tokenData = await redisClient.get(`token:${currentIp}`);
+  const parsed = JSON.parse(tokenData);
+  const currentDate = new Date().getTime();
+  const expired = parsed.expiryDate < currentDate;
 
   if (expired) {
     res.status(403);
     return res.send('Session token expired');
-  } else {
-    next();
   }
+
+  next();
 }
 
 async function isUploadOwner(req, res, next) {
   try {
     const currentIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
-    const token_data = await redisClient.get(`token:${currentIp}`);
-    const parsed_token = JSON.parse(token_data);
+    const tokenData = await redisClient.get(`token:${currentIp}`);
+    const parsedToken = JSON.parse(tokenData);
 
-    const filename_encoded = req.params.name;
-    
-    let file_data = await redisClient.get(filename_encoded);
-    file_data = JSON.parse(file_data);
+    const filenameEncoded = req.params.name;
 
-    if (parsed_token.token == file_data.token) {
-      req.file_data = file_data;
-      req.filename_encoded = filename_encoded;
+    let fileData = await redisClient.get(filenameEncoded);
+    fileData = JSON.parse(fileData);
+
+    if (parsedToken.token === fileData.token) {
+      req.fileData = fileData;
+      req.filenameEncoded = filenameEncoded;
       next();
     } else {
       res.status(403);
@@ -244,9 +248,9 @@ app.set('trust proxy', 1);
 app.use('/upload', uploadLimiter);
 
 app.post('/upload', checkToken, upload.single('file'), uploadFile);
-app.get("/remove/:name", checkToken, isUploadOwner, removeFile);
-app.get("/token", generateToken);
-app.get("/:name", downloadFile);
+app.get('/remove/:name', checkToken, isUploadOwner, removeFile);
+app.get('/token', generateToken);
+app.get('/:name', downloadFile);
 
 app.listen(port, () => {
   console.log(`App listening on port ${port}`);
