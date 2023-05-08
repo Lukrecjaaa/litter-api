@@ -19,21 +19,24 @@ const port = process.env.PORT || 3000;
 const basePath = process.env.BASE_PATH || './uploads';
 const upload = multer({ dest: basePath });
 
+/* Set up CORS and expose Content-Disposition header */
 app.use(cors({
   origin: process.env.CORS_ALLOWED_ORIGIN,
   optionsSuccessStatus: 200,
   exposedHeaders: 'Content-Disposition',
 }));
 
+/* Set up rate limit (default: 25 uploads per hour) */
 const uploadLimiter = rateLimit({
   windowMs: process.env.RATE_LIMIT_WINDOW || 60 * 60 * 1000,
-  max: process.env.MAX_FILE_AMOUNT || 100,
+  max: process.env.MAX_FILE_AMOUNT || 25,
   standardHeaders: true,
   legacyHeaders: false,
 });
 
 let redisClient;
 
+/* Run a cron task every minute */
 const job = new Cron(
   '* * * * *',
   (() => {
@@ -46,12 +49,14 @@ const job = new Cron(
         fileData = JSON.parse(fileData);
         const expired = fileData.expiryDate < currentDate;
 
+        /* Remove file if it's expired... */
         if (expired) {
           fs.rmSync(path.join(basePath, file));
           await redisClient.del(filenameEncoded);
           await redisClient.del(file);
         }
       } catch {
+        /* ...or if it's not in the database (eg. when upload is interrupted) */
         try {
           const stats = fs.statSync(path.join(basePath, file));
 
@@ -70,6 +75,7 @@ const job = new Cron(
   false,
 );
 
+/* Connect to Redis database */
 (async () => {
   redisClient = redis.createClient({
     url: process.env.REDIS_URL,
@@ -84,6 +90,7 @@ const job = new Cron(
   job.start();
 })();
 
+/* File download endpoint */
 async function downloadFile(req, res) {
   const filenameEncoded = req.params.name;
 
@@ -99,6 +106,7 @@ async function downloadFile(req, res) {
       });
       res.send(fs.readFileSync(filePath));
 
+      /* Remove the file if burn-after-download is turned on */
       if (object.burn) {
         fs.rmSync(filePath);
         await redisClient.del(filenameEncoded);
@@ -124,9 +132,10 @@ async function uploadFile(req, res) {
     ).getTime();
     const burn = (req.body.burn === 'true');
 
-    /* skip first base58check character */
+    /* Skip first base58check character */
     const filenameEncoded = base58check.encode(out.filename).substring(1, 7);
 
+    /* Set two redis entries */
     await redisClient.set(filenameEncoded, JSON.stringify(
       {
         file: out,
@@ -138,6 +147,7 @@ async function uploadFile(req, res) {
 
     await redisClient.set(out.filename, filenameEncoded);
 
+    /* Return encoded filename */
     res.json({ path: filenameEncoded });
   } catch (err) {
     res.status(500);
@@ -145,6 +155,7 @@ async function uploadFile(req, res) {
   }
 }
 
+/* Remove file and its database entry */
 async function removeFile(req, res) {
   try {
     const { fileData } = req;
@@ -162,6 +173,7 @@ async function removeFile(req, res) {
   }
 }
 
+/* Generate a random UUID v4 token and save it to database */
 async function newToken(ip) {
   const token = randomUUID();
   const currentDate = new Date();
@@ -174,6 +186,7 @@ async function newToken(ip) {
   return token;
 }
 
+/* Send a token to client if it exists, generate it otherwise */
 async function generateToken(req, res) {
   try {
     const clientIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -197,6 +210,7 @@ async function generateToken(req, res) {
   }
 }
 
+/* Middleware for checking if token exists or if it's valid */
 async function checkToken(req, res, next) {
   const { token } = req.query;
 
@@ -219,6 +233,8 @@ async function checkToken(req, res, next) {
   next();
 }
 
+/* Middleware for checking if user is an owner of the upload
+  (used to prevent unauthorized people from removing others' files) */
 async function isUploadOwner(req, res, next) {
   try {
     const currentIp = req.headers['x-forwarded-for'] || req.socket.remoteAddress;
@@ -240,10 +256,11 @@ async function isUploadOwner(req, res, next) {
     }
   } catch (err) {
     res.status(403);
-    return res.send('Cannot check file ownership');
+    return res.send('File doesn\'t exist');
   }
 }
 
+/* Needed for rate limiting to work behind a reverse proxy */
 app.set('trust proxy', 1);
 app.use('/upload', uploadLimiter);
 
