@@ -17,7 +17,8 @@ require('dotenv').config();
 const app = express();
 const port = process.env.PORT || 3000;
 const basePath = process.env.BASE_PATH || './uploads';
-const upload = multer({ dest: basePath });
+const maxSize = process.env.MAX_SIZE || 104857600;
+const upload = multer({ dest: basePath, limits: { fileSize: maxSize } });
 
 /* Set up CORS and expose Content-Disposition header */
 app.use(cors({
@@ -122,13 +123,28 @@ async function downloadFile(req, res) {
   }
 }
 
+/* Verify expiry date */
+function getExpiry(date) {
+  date = Number(date);
+  switch (date) {
+    case 1:
+    case 12:
+    case 24:
+    case 72:
+      return date;
+    default:
+      return 1;
+  }
+}
+
+/* File upload endpoint */
 async function uploadFile(req, res) {
   try {
     const out = req.file;
 
     const currentDate = new Date();
     const expiryDate = new Date(
-      currentDate.getTime() + Number(req.body.expireAfter) * 60 * 60 * 1000,
+      currentDate.getTime() + getExpiry(req.body.expireAfter) * 60 * 60 * 1000,
     ).getTime();
     const burn = (req.body.burn === 'true');
 
